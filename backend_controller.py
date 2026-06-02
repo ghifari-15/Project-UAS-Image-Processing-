@@ -74,16 +74,16 @@ def run_stage(stage, **kwargs):
         return f"Binarization selesai. {total_images} gambar diproses."
 
     if stage == "create_dataset":
-        create_dataset(
+        total_rows, dataset_path = create_dataset(
             kwargs["input_folder"],
             kwargs["output_folder"],
             kwargs["label"],
             kwargs["dataset_name"],
         )
-        return "Dataset dan label selesai dipanggil."
+        return f"Dataset .npy selesai dibuat. {total_rows} data disimpan ke {dataset_path}."
 
     if stage == "randomize_dataset":
-        randomize_dataset(kwargs["output_folder"], kwargs["dataset_name"])
-        return "Randomize dataset selesai dipanggil."
+        total_rows, dataset_path = randomize_dataset(kwargs["output_folder"], kwargs["dataset_name"])
+        return f"Randomize dataset selesai. {total_rows} data diacak di {dataset_path}."
 
     raise ValueError(f"Tahap tidak dikenal: {stage}")

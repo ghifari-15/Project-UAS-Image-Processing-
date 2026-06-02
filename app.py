@@ -56,7 +56,7 @@ class PreprocessingApp(tk.Tk):
         self.resize_cols = tk.StringVar(value="30")
         self.threshold_value = tk.StringVar(value="128")
         self.label_value = tk.StringVar()
-        self.dataset_name = tk.StringVar(value="dataset.csv")
+        self.dataset_name = tk.StringVar(value="dataset.npy")
 
         self.preview_image = None
         self.stage_items = []
