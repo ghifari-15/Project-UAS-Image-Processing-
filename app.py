@@ -106,8 +106,38 @@ class PreprocessingApp(tk.Tk):
         content.columnconfigure(1, weight=1)
         content.rowconfigure(0, weight=1)
 
-        left = ttk.Frame(content, style="Card.TFrame", padding=22)
-        left.grid(row=0, column=0, sticky="nsw", padx=(0, 18))
+        left_shell = ttk.Frame(content, style="Card.TFrame", padding=0)
+        left_shell.grid(row=0, column=0, sticky="nsw", padx=(0, 18))
+        left_shell.configure(width=420)
+        left_shell.grid_propagate(False)
+        left_shell.rowconfigure(0, weight=1)
+        left_shell.columnconfigure(0, weight=1)
+
+        left_canvas = tk.Canvas(
+            left_shell,
+            bg=COLORS["surface_card"],
+            highlightthickness=0,
+            width=420,
+        )
+        left_scrollbar = ttk.Scrollbar(left_shell, orient="vertical", command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        left_canvas.grid(row=0, column=0, sticky="nsew")
+        left_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        left = ttk.Frame(left_canvas, style="Card.TFrame", padding=22)
+        left_window = left_canvas.create_window((0, 0), window=left, anchor="nw")
+
+        def sync_left_scroll(_event=None):
+            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+            left_canvas.itemconfigure(left_window, width=left_canvas.winfo_width())
+
+        def scroll_left(event):
+            left_canvas.yview_scroll(-1 * (event.delta // 120), "units")
+
+        left.bind("<Configure>", sync_left_scroll)
+        left_canvas.bind("<Configure>", sync_left_scroll)
+        left_canvas.bind("<Enter>", lambda _event: left_canvas.bind_all("<MouseWheel>", scroll_left))
+        left_canvas.bind("<Leave>", lambda _event: left_canvas.unbind_all("<MouseWheel>"))
 
         right = ttk.Frame(content, style="Dark.TFrame", padding=22)
         right.grid(row=0, column=1, sticky="nsew")
@@ -142,8 +172,9 @@ class PreprocessingApp(tk.Tk):
         ttk.Label(parent, text=label, style="CardMuted.TLabel").pack(anchor="w", pady=(8, 3))
         row = ttk.Frame(parent, style="Card.TFrame")
         row.pack(fill="x")
-        ttk.Entry(row, textvariable=variable, width=42).pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="Browse", command=command).pack(side="left", padx=(8, 0))
+        row.columnconfigure(0, weight=1)
+        ttk.Entry(row, textvariable=variable).grid(row=0, column=0, sticky="ew")
+        ttk.Button(row, text="Browse", command=command).grid(row=0, column=1, sticky="e", padx=(8, 0))
 
     def _build_preprocessing_panel(self, parent):
         ttk.Label(parent, text="Tahap preprocessing", style="Section.TLabel").pack(anchor="w", pady=(22, 10))
