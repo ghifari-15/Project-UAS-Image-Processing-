@@ -1,8 +1,12 @@
 import os
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from PIL import Image, ImageTk
+import matplotlib.pyplot as plt
+import numpy as np
+
+from dataset_tools import load_labels, save_label
 
 from backend_controller import run_stage
 
@@ -50,16 +54,20 @@ class PreprocessingApp(tk.Tk):
         self.input_folder = tk.StringVar()
         self.output_folder = tk.StringVar()
         self.selected_image = tk.StringVar()
+        self.preview_info = tk.StringVar(value="Belum ada gambar hasil preprocessing.")
         self.status_text = tk.StringVar(value="Pilih folder input berisi gambar .jpg untuk memulai.")
         self.pooling_method = tk.StringVar(value="average")
         self.resize_rows = tk.StringVar(value="20")
         self.resize_cols = tk.StringVar(value="30")
         self.threshold_value = tk.StringVar(value="128")
         self.label_value = tk.StringVar()
-        self.dataset_name = tk.StringVar(value="dataset.npy")
+        self.labels_name = tk.StringVar(value="labels.csv")
+        self.dataset_name = tk.StringVar(value="dataset.csv")
 
-        self.preview_image = None
+        self.preview_before_image = None
+        self.preview_after_image = None
         self.stage_items = []
+        self.stage_running = False
 
         self._configure_style()
         self._build_layout()
@@ -164,7 +172,8 @@ class PreprocessingApp(tk.Tk):
        
 
     def _build_folder_panel(self, parent):
-        ttk.Label(parent, text="Folder gambar", style="Section.TLabel").pack(anchor="w", pady=(0, 10))
+        ttk.Label(parent, text="1. Folder kerja", style="Section.TLabel").pack(anchor="w", pady=(0, 6))
+        ttk.Label(parent, text="Input otomatis mengikuti hasil tahap terakhir. Output adalah folder induk untuk hasil grayscale, resize, dan binarization.", style="CardMuted.TLabel", wraplength=360).pack(anchor="w", pady=(0, 8))
         self._folder_row(parent, "Input", self.input_folder, self.choose_input_folder)
         self._folder_row(parent, "Output", self.output_folder, self.choose_output_folder)
 
@@ -177,7 +186,8 @@ class PreprocessingApp(tk.Tk):
         ttk.Button(row, text="Browse", command=command).grid(row=0, column=1, sticky="e", padx=(8, 0))
 
     def _build_preprocessing_panel(self, parent):
-        ttk.Label(parent, text="Tahap preprocessing", style="Section.TLabel").pack(anchor="w", pady=(22, 10))
+        ttk.Label(parent, text="2. Preprocessing", style="Section.TLabel").pack(anchor="w", pady=(22, 6))
+        ttk.Label(parent, text="Jalankan bertahap: mentah ke grayscale, grayscale ke resize, resize ke binary.", style="CardMuted.TLabel", wraplength=360).pack(anchor="w", pady=(0, 8))
         self._stage_button(parent, "01", "Color-to-Grayscale Conversion", "Konversi warna ke intensitas abu-abu.", self.run_grayscale)
 
         box = ttk.Frame(parent, style="Card.TFrame")
@@ -206,17 +216,11 @@ class PreprocessingApp(tk.Tk):
         self._primary_button(action, "Start", self.run_binarization).pack(side="right")
 
     def _build_dataset_panel(self, parent):
-        ttk.Label(parent, text="Dataset", style="Section.TLabel").pack(anchor="w", pady=(22, 10))
+        ttk.Label(parent, text="3. Dataset ANN", style="Section.TLabel").pack(anchor="w", pady=(22, 6))
+        ttk.Label(parent, text="Class diambil otomatis dari nama file. Hasilnya inputs, labels, dan class_map untuk ANN.", style="CardMuted.TLabel", wraplength=360).pack(anchor="w", pady=(0, 8))
 
-        form = ttk.Frame(parent, style="Card.TFrame")
-        form.pack(fill="x")
-        ttk.Label(form, text="Label", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(form, text="Nama file", style="CardMuted.TLabel").grid(row=0, column=1, sticky="w", padx=(10, 0))
-        ttk.Entry(form, textvariable=self.label_value, width=15).grid(row=1, column=0, sticky="ew", pady=(3, 10))
-        ttk.Entry(form, textvariable=self.dataset_name, width=22).grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=(3, 10))
-
-        self._stage_button(parent, "04", "Creating Dataset + Label", "Susun fitur piksel dan label ke file dataset.", self.run_create_dataset)
-        self._stage_button(parent, "05", "Randomize Dataset", "Acak urutan data sebelum training ANN.", self.run_randomize_dataset)
+        self._stage_button(parent, "03", "Dataset & Label", "Buat inputs_*.npy, labels_*.npy, class_map, dan dataset.csv.", self.run_create_dataset)
+        self._stage_button(parent, "04", "Randomize Dataset", "Buat random_inputs_*.npy dan random_labels_*.npy.", self.run_randomize_dataset)
 
     def _stage_label(self, parent, number, title, description):
         row = ttk.Frame(parent, style="Card.TFrame")
@@ -252,27 +256,40 @@ class PreprocessingApp(tk.Tk):
         return button
 
     def _build_preview_panel(self, parent):
-        ttk.Label(parent, text="Product surface", style="DarkTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(parent, text="Preview file, output folder, dan status pipeline", style="Dark.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 14))
+        ttk.Label(parent, text="Overview hasil preprocessing", style="DarkTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(parent, text="Panel ini hanya menampilkan gambar dari folder Output.", style="Dark.TLabel", foreground=COLORS["on_dark_soft"], padding=(0, 4, 0, 14)).grid(row=1, column=0, sticky="w")
+      
 
         top_row = ttk.Frame(parent, style="Dark.TFrame")
-        top_row.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        top_row.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         top_row.columnconfigure(0, weight=1)
 
         self.image_combo = ttk.Combobox(top_row, textvariable=self.selected_image, state="readonly")
         self.image_combo.grid(row=0, column=0, sticky="ew")
         self.image_combo.bind("<<ComboboxSelected>>", lambda _event: self.show_selected_image())
-        ttk.Button(top_row, text="Refresh", style="Dark.TButton", command=self.refresh_image_list).grid(row=0, column=1, padx=(8, 0))
+        ttk.Button(top_row, text="Prev", style="Dark.TButton", command=self.show_previous_image).grid(row=0, column=1, padx=(8, 0))
+        ttk.Button(top_row, text="Next", style="Dark.TButton", command=self.show_next_image).grid(row=0, column=2, padx=(8, 0))
+        ttk.Button(top_row, text="Refresh", style="Dark.TButton", command=self.refresh_image_list).grid(row=0, column=3, padx=(8, 0))
+
+        ttk.Label(parent, textvariable=self.preview_info, style="Dark.TLabel", foreground=COLORS["on_dark_soft"]).grid(row=3, column=0, sticky="w", pady=(0, 12))
 
         preview_wrap = tk.Frame(parent, bg=COLORS["surface_dark_soft"], highlightbackground=COLORS["surface_dark_elevated"], highlightthickness=1)
-        preview_wrap.grid(row=3, column=0, sticky="nsew")
-        preview_wrap.rowconfigure(0, weight=1)
+        preview_wrap.grid(row=4, column=0, sticky="nsew")
+        preview_wrap.rowconfigure(1, weight=1)
         preview_wrap.columnconfigure(0, weight=1)
+        preview_wrap.columnconfigure(1, weight=1)
 
-        self.preview_canvas = tk.Canvas(preview_wrap, bg=COLORS["surface_dark_soft"], highlightthickness=0)
-        self.preview_canvas.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        tk.Label(preview_wrap, text="Before", bg=COLORS["surface_dark_soft"], fg=COLORS["on_dark_soft"], font=BODY_FONT_MEDIUM).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 0))
+        tk.Label(preview_wrap, text="After", bg=COLORS["surface_dark_soft"], fg=COLORS["on_dark_soft"], font=BODY_FONT_MEDIUM).grid(row=0, column=1, sticky="w", padx=12, pady=(10, 0))
 
-        self.preview_canvas.bind("<Configure>", lambda _event: self.show_selected_image())
+        self.before_canvas = tk.Canvas(preview_wrap, bg=COLORS["surface_dark_soft"], highlightthickness=0)
+        self.before_canvas.grid(row=1, column=0, sticky="nsew", padx=(12, 6), pady=12)
+
+        self.after_canvas = tk.Canvas(preview_wrap, bg=COLORS["surface_dark_soft"], highlightthickness=0)
+        self.after_canvas.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=12)
+
+        self.before_canvas.bind("<Configure>", lambda _event: self.show_selected_image())
+        self.after_canvas.bind("<Configure>", lambda _event: self.show_selected_image())
 
     def choose_input_folder(self):
         folder = filedialog.askdirectory(title="Pilih Folder Input")
@@ -293,51 +310,157 @@ class PreprocessingApp(tk.Tk):
         self.set_status("Folder output dipilih.")
 
     def refresh_image_list(self):
-        folders = [self.input_folder.get(), self.output_folder.get()]
+        folders = [self.output_folder.get()]
         image_paths = []
         for folder in folders:
             if not folder or not os.path.isdir(folder):
                 continue
-            for filename in sorted(os.listdir(folder)):
-                if filename.lower().endswith(IMAGE_EXTENSIONS):
-                    image_paths.append(os.path.join(folder, filename))
+            for current_folder, _subfolders, filenames in os.walk(folder):
+                for filename in sorted(filenames):
+                    if filename.lower().endswith(IMAGE_EXTENSIONS):
+                        image_paths.append(os.path.join(current_folder, filename))
 
         unique_paths = sorted(dict.fromkeys(image_paths))
         self.image_combo["values"] = unique_paths
         if unique_paths and self.selected_image.get() not in unique_paths:
             self.selected_image.set(unique_paths[0])
             self.show_selected_image()
+            self.load_current_label()
         elif not unique_paths:
             self.selected_image.set("")
-            self.clear_preview("Belum ada gambar .jpg yang ditemukan.")
+            self.preview_info.set("Belum ada gambar hasil preprocessing di folder output.")
+            self.clear_preview("Belum ada gambar hasil preprocessing di folder output.")
 
     def show_selected_image(self):
         path = self.selected_image.get()
         if not path:
             self.clear_preview("Pilih gambar untuk preview.")
             return
+        before_path = self.match_before_image(path)
         try:
-            image = Image.open(path)
-        except OSError as error:
+            after_image = self.load_preview_array(path)
+        except Exception as error:
             self.clear_preview(f"Gagal membuka gambar:\n{error}")
             return
 
-        canvas_width = max(self.preview_canvas.winfo_width() - 24, 1)
-        canvas_height = max(self.preview_canvas.winfo_height() - 24, 1)
-        image.thumbnail((canvas_width, canvas_height), Image.Resampling.LANCZOS)
-        self.preview_image = ImageTk.PhotoImage(image)
+        self.draw_image(self.after_canvas, after_image, "after")
+        if before_path and os.path.isfile(before_path):
+            try:
+                before_image = self.load_preview_array(before_path)
+            except Exception:
+                self.clear_canvas(self.before_canvas, "Before tidak bisa dibuka.")
+            else:
+                self.draw_image(self.before_canvas, before_image, "before")
+        else:
+            self.clear_canvas(self.before_canvas, "Before tidak ditemukan di folder input.")
+        self.load_current_label()
+        self.update_preview_info()
 
-        self.preview_canvas.delete("all")
-        image_width = self.preview_image.width()
-        image_height = self.preview_image.height()
-        x = max((self.preview_canvas.winfo_width() - image_width) // 2, 0)
-        y = max((self.preview_canvas.winfo_height() - image_height) // 2, 0)
-        self.preview_canvas.create_image(x, y, anchor="nw", image=self.preview_image)
+    def match_before_image(self, after_path):
+        input_folder = self.input_folder.get().strip()
+        if not input_folder or not os.path.isdir(input_folder):
+            return ""
+
+        filename = os.path.basename(after_path)
+        direct_path = os.path.join(input_folder, filename)
+        if os.path.isfile(direct_path):
+            return direct_path
+
+        base, ext = os.path.splitext(filename)
+        if base.endswith("_ready"):
+            ready_source = os.path.join(input_folder, base[:-6] + ext)
+            if os.path.isfile(ready_source):
+                return ready_source
+        for marker in ("_gray", "_average_", "_max_", "_bin"):
+            if marker in base:
+                source_base = base.split(marker)[0]
+                source_path = os.path.join(input_folder, source_base + ext)
+                if os.path.isfile(source_path):
+                    return source_path
+        return ""
+
+    def draw_image(self, canvas, image, slot):
+        canvas_width = max(canvas.winfo_width() - 24, 1)
+        canvas_height = max(canvas.winfo_height() - 24, 1)
+        photo = self.array_to_photo(image, canvas_width, canvas_height)
+        if slot == "before":
+            self.preview_before_image = photo
+        else:
+            self.preview_after_image = photo
+
+        canvas.delete("all")
+        x = max((canvas.winfo_width() - photo.width()) // 2, 0)
+        y = max((canvas.winfo_height() - photo.height()) // 2, 0)
+        canvas.create_image(x, y, anchor="nw", image=photo)
+
+    def load_preview_array(self, path):
+        image = plt.imread(path)
+        if image.dtype != np.uint8:
+            image = np.clip(image * 255 if image.max() <= 1.0 else image, 0, 255).astype(np.uint8)
+        if image.ndim == 2:
+            image = np.repeat(image[:, :, np.newaxis], 3, axis=2)
+        return image[:, :, :3]
+
+    def array_to_photo(self, image, max_width, max_height):
+        height, width = image.shape[:2]
+        scale = min(max_width / width, max_height / height, 1)
+        target_width = max(int(width * scale), 1)
+        target_height = max(int(height * scale), 1)
+        row_idx = np.linspace(0, height - 1, target_height).astype(int)
+        col_idx = np.linspace(0, width - 1, target_width).astype(int)
+        resized = image[row_idx][:, col_idx]
+        header = f"P6 {target_width} {target_height} 255\n".encode("ascii")
+        return tk.PhotoImage(data=header + resized.astype(np.uint8).tobytes(), format="PPM")
+
+    def clear_canvas(self, canvas, text):
+        canvas.delete("all")
+        canvas.create_text(22, 22, anchor="nw", fill=COLORS["on_dark"], text=text, font=CODE_FONT)
+
+    def show_previous_image(self):
+        self.shift_selected_image(-1)
+
+    def show_next_image(self):
+        self.shift_selected_image(1)
+
+    def shift_selected_image(self, step):
+        image_paths = list(self.image_combo["values"])
+        if not image_paths:
+            self.clear_preview("Belum ada gambar .jpg yang ditemukan.")
+            return
+
+        current_path = self.selected_image.get()
+        try:
+            current_index = image_paths.index(current_path)
+        except ValueError:
+            current_index = 0 if step >= 0 else len(image_paths) - 1
+        else:
+            current_index = (current_index + step) % len(image_paths)
+
+        self.selected_image.set(image_paths[current_index])
+        self.show_selected_image()
+        self.set_status(f"Preview gambar {current_index + 1} dari {len(image_paths)}.")
+
+    def update_preview_info(self):
+        image_paths = list(self.image_combo["values"])
+        path = self.selected_image.get()
+        if not image_paths or not path:
+            self.preview_info.set("Belum ada gambar hasil preprocessing.")
+            return
+
+        try:
+            current_index = image_paths.index(path) + 1
+        except ValueError:
+            current_index = 1
+
+        label = self.label_value.get().strip()
+        label_text = label if label else "belum dilabeli"
+        self.preview_info.set(f"{current_index}/{len(image_paths)}  |  {os.path.basename(path)}  |  Label: {label_text}")
 
     def clear_preview(self, text):
-        self.preview_image = None
-        self.preview_canvas.delete("all")
-        self.preview_canvas.create_text(22, 22, anchor="nw", fill=COLORS["on_dark"], text=text, font=CODE_FONT)
+        self.preview_before_image = None
+        self.preview_after_image = None
+        self.clear_canvas(self.before_canvas, text)
+        self.clear_canvas(self.after_canvas, text)
 
     def validate_common_folders(self):
         input_folder = self.input_folder.get().strip()
@@ -365,25 +488,120 @@ class PreprocessingApp(tk.Tk):
         self.status_text.set(text)
         self.update_idletasks()
 
-    def execute_stage(self, stage, **kwargs):
+    def labels_csv_path(self):
+        output_folder = self.output_folder.get().strip()
+        labels_name = self.labels_name.get().strip() or "labels.csv"
+        base, ext = os.path.splitext(labels_name)
+        filename = labels_name if ext.lower() == ".csv" else f"{base or labels_name}.csv"
+        return os.path.join(output_folder, filename)
+
+    def load_current_label(self):
+        path = self.selected_image.get()
+        output_folder = self.output_folder.get().strip()
+        if not path or not output_folder:
+            return
+        labels_path = self.labels_csv_path()
+        if not os.path.isfile(labels_path):
+            return
         try:
-            result = run_stage(stage, **kwargs)
-        except NotImplementedError as error:
-            messagebox.showinfo("Backend belum diisi", str(error))
-            result = f"Tahap '{stage}' sudah terhubung ke modul backend, tetapi implementasinya belum diisi."
-        except Exception as error:
-            messagebox.showerror("Proses gagal", str(error))
-            self.set_status(f"Tahap '{stage}' gagal.")
+            labels = load_labels(labels_path)
+        except Exception:
+            return
+        self.label_value.set(labels.get(os.path.basename(path), ""))
+        self.update_preview_info()
+
+    def save_current_label(self):
+        folders = self.validate_common_folders()
+        if not folders:
+            return
+        path = self.selected_image.get()
+        if not path:
+            messagebox.showerror("Gambar Belum Dipilih", "Pilih gambar yang akan diberi label terlebih dahulu.")
+            return
+        label = self.label_value.get().strip()
+        if not label:
+            messagebox.showerror("Label Kosong", "Isi label untuk gambar yang dipilih terlebih dahulu.")
+            return
+        labels_name = self.labels_name.get().strip()
+        if not labels_name:
+            messagebox.showerror("Nama CSV Kosong", "Isi nama file label CSV terlebih dahulu.")
+            return
+        labels_path = self.labels_csv_path()
+        save_label(labels_path, os.path.basename(path), label)
+        self.set_status(f"Label '{label}' disimpan untuk {os.path.basename(path)} ke {labels_path}.")
+        self.update_preview_info()
+
+    def save_current_label_and_next(self):
+        before = self.selected_image.get()
+        self.save_current_label()
+        if before == self.selected_image.get():
+            self.show_next_image()
+
+    def execute_stage(self, stage, **kwargs):
+        if self.stage_running:
+            messagebox.showinfo("Proses Sedang Berjalan", "Tunggu proses sebelumnya selesai terlebih dahulu.")
             return
 
+        self.stage_running = True
+
+        def worker():
+            try:
+                result = run_stage(stage, **kwargs)
+            except NotImplementedError as error:
+                self.after(0, self.handle_stage_not_implemented, stage, str(error))
+            except Exception as error:
+                self.after(0, self.handle_stage_error, stage, str(error))
+            else:
+                self.after(0, self.handle_stage_success_result, stage, result, self.stage_output_folder(stage, kwargs.get("output_folder")))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def handle_stage_not_implemented(self, stage, error_text):
+        self.stage_running = False
+        messagebox.showinfo("Backend belum diisi", error_text)
+        self.set_status(f"Tahap '{stage}' sudah terhubung ke modul backend, tetapi implementasinya belum diisi.")
+
+    def handle_stage_error(self, stage, error_text):
+        self.stage_running = False
+        messagebox.showerror("Proses gagal", error_text)
+        self.set_status(f"Tahap '{stage}' gagal.")
+
+    def handle_stage_success_result(self, stage, result, output_folder):
+        self.stage_running = False
+        self.use_stage_output_as_next_input(stage, output_folder)
         self.refresh_image_list()
-        self.select_latest_output_image(kwargs.get("output_folder"))
+        self.select_latest_output_image(output_folder)
         self.set_status(result)
         self.show_stage_success(stage, result)
 
+    def use_stage_output_as_next_input(self, stage, output_folder):
+        if stage not in {"grayscale", "resize", "binarization"}:
+            return
+        if output_folder and os.path.isdir(output_folder):
+            self.input_folder.set(output_folder)
+
+    def stage_output_folder(self, stage, output_folder):
+        if not output_folder:
+            return output_folder
+        folder_names = {
+            "grayscale": "grayscale",
+            "resize": "resize",
+            "binarization": "binarization",
+        }
+        folder_name = folder_names.get(stage)
+        if not folder_name:
+            return output_folder
+        return os.path.join(output_folder, folder_name)
+
     def show_stage_success(self, stage, result):
-        if stage == "grayscale":
-            messagebox.showinfo("Grayscale Berhasil", result)
+        titles = {
+            "grayscale": "Grayscale Berhasil",
+            "resize": "Resizing Berhasil",
+            "binarization": "Binarization Berhasil",
+            "create_dataset": "Dataset & Label Berhasil",
+            "randomize_dataset": "Randomize Dataset Berhasil",
+        }
+        messagebox.showinfo(titles.get(stage, "Proses Berhasil"), result)
 
     def select_latest_output_image(self, output_folder):
         if not output_folder or not os.path.isdir(output_folder):
@@ -439,17 +657,13 @@ class PreprocessingApp(tk.Tk):
         folders = self.validate_common_folders()
         if not folders:
             return
-        label = self.label_value.get().strip()
         dataset_name = self.dataset_name.get().strip()
-        if not label:
-            messagebox.showerror("Label Kosong", "Isi label dataset terlebih dahulu.")
-            return
         if not dataset_name:
             messagebox.showerror("Nama File Kosong", "Isi nama file dataset terlebih dahulu.")
             return
         input_folder, output_folder = folders
-        self.set_status("Membuat dataset dan label...")
-        self.execute_stage("create_dataset", input_folder=input_folder, output_folder=output_folder, label=label, dataset_name=dataset_name)
+        self.set_status("Membuat dataset dan label otomatis...")
+        self.execute_stage("create_dataset", input_folder=input_folder, output_folder=output_folder, labels_folder=output_folder, labels_name=self.labels_name.get(), dataset_name=dataset_name)
 
     def run_randomize_dataset(self):
         folders = self.validate_common_folders()
@@ -462,8 +676,3 @@ class PreprocessingApp(tk.Tk):
         _input_folder, output_folder = folders
         self.set_status("Mengacak dataset...")
         self.execute_stage("randomize_dataset", output_folder=output_folder, dataset_name=dataset_name)
-
-
-if __name__ == "__main__":
-    app = PreprocessingApp()
-    app.mainloop()

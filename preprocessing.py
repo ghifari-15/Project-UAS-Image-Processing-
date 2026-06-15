@@ -2,6 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
+ROW_CROP = 0.05
+COL_CROP = 0.05
+READY_ROWS = 20
+READY_COLS = 20
+READY_CHANNELS = 3
+
+
 def grayscale_image(input_path, output_path):
     img = plt.imread(input_path)
 
@@ -75,6 +82,52 @@ def binarize_image(input_path, output_path, threshold):
     binary = np.zeros(gray.shape, dtype=np.uint8)
     binary[gray >= threshold] = 255
     plt.imsave(output_path, binary, cmap="gray")
+
+
+def ready_image(input_path, output_path, threshold):
+    pic_ori = plt.imread(input_path)
+    pic_ori = _to_uint8(pic_ori)
+    row, col = np.shape(pic_ori)[0], np.shape(pic_ori)[1]
+
+    row_margin = round(ROW_CROP * row)
+    col_margin = round(COL_CROP * col)
+    pic_crop = pic_ori[row_margin:row - row_margin, col_margin:col - col_margin, :]
+
+    pic_asal = pic_crop.astype(np.float16)
+    row_asal, col_asal, _ch_asal = pic_asal.shape
+    row_hasil, col_hasil, ch_hasil = READY_ROWS, READY_COLS, READY_CHANNELS
+
+    delta_row = round(row_asal / READY_ROWS)
+    delta_col = round(col_asal / READY_COLS)
+    pooled_rows = min(row_hasil, (row_asal - delta_row + delta_row - 1) // delta_row)
+    pooled_cols = min(col_hasil, (col_asal - delta_col + delta_col - 1) // delta_col)
+    usable_rows = pooled_rows * delta_row
+    usable_cols = pooled_cols * delta_col
+
+    pooled = pic_asal[:usable_rows, :usable_cols, :].reshape(
+        pooled_rows,
+        delta_row,
+        pooled_cols,
+        delta_col,
+        ch_hasil,
+    )
+    pic_res = np.zeros(shape=(row_hasil, col_hasil, ch_hasil), dtype=np.float16)
+    pic_res[:pooled_rows, :pooled_cols, :] = pooled.mean(axis=(1, 3))
+
+    average = (pic_res[:, :, 0] + pic_res[:, :, 1] + pic_res[:, :, 2]) / 3
+    pic_gs = np.zeros_like(pic_res)
+    pic_gs[:, :, 0] = average
+    pic_gs[:, :, 1] = average
+    pic_gs[:, :, 2] = average
+
+    pic_gs_hitam = 255 - pic_gs
+
+    pic_gs_hitam_kontras = 1 * pic_gs_hitam
+    binary = pic_gs_hitam_kontras[:, :, 0] >= threshold
+    pic_gs_hitam_kontras[:, :, :] = 0
+    pic_gs_hitam_kontras[binary, :] = 255
+
+    plt.imsave(output_path, pic_gs_hitam_kontras.astype(np.uint8))
 
 
 def _to_uint8(img):
