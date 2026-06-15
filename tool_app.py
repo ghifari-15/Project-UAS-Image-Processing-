@@ -68,6 +68,7 @@ class PreprocessingApp(tk.Tk):
         self.preview_after_image = None
         self.stage_items = []
         self.stage_running = False
+        self.stage_source_folders = {}
 
         self._configure_style()
         self._build_layout()
@@ -357,8 +358,11 @@ class PreprocessingApp(tk.Tk):
         self.update_preview_info()
 
     def match_before_image(self, after_path):
-        input_folder = self.input_folder.get().strip()
-        if not input_folder or not os.path.isdir(input_folder):
+        after_folder = os.path.dirname(after_path)
+        input_folder = self.stage_source_folders.get(self.folder_key(after_folder), self.input_folder.get().strip())
+        if not input_folder or not os.path.isdir(input_folder) or self.same_folder(input_folder, after_folder):
+            input_folder = self.infer_before_folder(after_folder)
+        if not input_folder or not os.path.isdir(input_folder) or self.same_folder(input_folder, after_folder):
             return ""
 
         filename = os.path.basename(after_path)
@@ -371,13 +375,33 @@ class PreprocessingApp(tk.Tk):
             ready_source = os.path.join(input_folder, base[:-6] + ext)
             if os.path.isfile(ready_source):
                 return ready_source
-        for marker in ("_gray", "_average_", "_max_", "_bin"):
+        for marker in ("_bin", "_average_", "_max_", "_gray"):
             if marker in base:
                 source_base = base.split(marker)[0]
                 source_path = os.path.join(input_folder, source_base + ext)
                 if os.path.isfile(source_path):
                     return source_path
         return ""
+
+    def infer_before_folder(self, after_folder):
+        folder_name = os.path.basename(after_folder).lower()
+        output_root = os.path.dirname(after_folder)
+        if folder_name == "grayscale":
+            return ""
+        if folder_name == "resize":
+            return os.path.join(output_root, "grayscale")
+        if folder_name == "binarization":
+            resize_folder = os.path.join(output_root, "resize")
+            if os.path.isdir(resize_folder):
+                return resize_folder
+            return os.path.join(output_root, "grayscale")
+        return self.input_folder.get().strip()
+
+    def folder_key(self, folder):
+        return os.path.normcase(os.path.abspath(folder))
+
+    def same_folder(self, first, second):
+        return self.folder_key(first) == self.folder_key(second)
 
     def draw_image(self, canvas, image, slot):
         canvas_width = max(canvas.winfo_width() - 24, 1)
@@ -552,7 +576,7 @@ class PreprocessingApp(tk.Tk):
             except Exception as error:
                 self.after(0, self.handle_stage_error, stage, str(error))
             else:
-                self.after(0, self.handle_stage_success_result, stage, result, self.stage_output_folder(stage, kwargs.get("output_folder")))
+                self.after(0, self.handle_stage_success_result, stage, result, self.stage_output_folder(stage, kwargs.get("output_folder")), kwargs.get("input_folder"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -566,13 +590,20 @@ class PreprocessingApp(tk.Tk):
         messagebox.showerror("Proses gagal", error_text)
         self.set_status(f"Tahap '{stage}' gagal.")
 
-    def handle_stage_success_result(self, stage, result, output_folder):
+    def handle_stage_success_result(self, stage, result, output_folder, input_folder):
         self.stage_running = False
+        self.remember_stage_source_folder(stage, output_folder, input_folder)
         self.use_stage_output_as_next_input(stage, output_folder)
         self.refresh_image_list()
         self.select_latest_output_image(output_folder)
         self.set_status(result)
         self.show_stage_success(stage, result)
+
+    def remember_stage_source_folder(self, stage, output_folder, input_folder):
+        if stage not in {"grayscale", "resize", "binarization"}:
+            return
+        if output_folder and input_folder and os.path.isdir(output_folder) and os.path.isdir(input_folder):
+            self.stage_source_folders[self.folder_key(output_folder)] = input_folder
 
     def use_stage_output_as_next_input(self, stage, output_folder):
         if stage not in {"grayscale", "resize", "binarization"}:
